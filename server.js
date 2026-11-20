@@ -1,8 +1,8 @@
-﻿
-import express from "express";
+﻿import express from "express";
 import cors from "cors";
 import "dotenv/config";
 import { MongoClient, ObjectId } from "mongodb";
+import { verifyToken, verifyAdmin } from "./middleware/auth.js";
 
 const app = express();
 const port = Number(process.env.PORT) || 5000;
@@ -20,7 +20,7 @@ app.use(
     origin: clientUrl,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  })
+  }),
 );
 
 const mongoClient = new MongoClient(mongoUri);
@@ -70,6 +70,14 @@ app.get("/services", async (req, res) => {
     } else if (sort === "price-desc") {
       sortOption = { price: -1 };
     }
+
+    app.get("/admin/test", verifyToken, verifyAdmin, (req, res) => {
+      res.status(200).json({
+        success: true,
+        message: "Admin authentication successful!",
+        user: req.user,
+      });
+    });
 
     const services = await servicesCollection
       .find(query)
