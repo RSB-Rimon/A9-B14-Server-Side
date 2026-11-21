@@ -857,6 +857,29 @@ app.post("/appointments", verifyToken, async (req, res) => {
   }
 });
 
+app.get("/appointments", verifyToken, async (req, res) => {
+  try {
+    const appointments = await appointmentsCollection
+      .find({ customerId: req.user.id })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      count: appointments.length,
+      data: appointments,
+    });
+  } catch (error) {
+    console.error("Get customer appointments error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to load appointments.",
+    });
+  }
+});
+
+
 
 
 
