@@ -56,6 +56,25 @@ const transactionsCollection = db.collection("transactions");
       message: "Admin authentication successful!",
     });
   });
+  app.get("/test-services", async (req, res) => {
+  try {
+    const services = await servicesCollection.find({}).toArray();
+
+    res.json({
+      count: services.length,
+      data: services.map((service) => ({
+        name: service.serviceName,
+        status: service.status,
+        category: service.category,
+      })),
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+}); 
+
+
+
 
   // GET ALL ACTIVE SERVICES
   app.get("/services", async (req, res) => {
@@ -515,6 +534,261 @@ app.get(
     }
   }
 );
+
+
+// add more 
+// ===============================
+// ADMIN: GET ALL APPOINTMENTS
+// ===============================
+app.get("/admin/appointments", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { status } = req.query;
+    const query = {};
+
+    if (status && ["pending", "confirmed", "cancelled"].includes(status)) {
+      query.status = status;
+    }
+
+    const appointments = await appointmentsCollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      count: appointments.length,
+      data: appointments,
+    });
+  } catch (error) {
+    console.error("Get appointments error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch appointments",
+    });
+  }
+});
+
+// ===============================
+// ADMIN: GET APPOINTMENT DETAILS
+// ===============================
+app.get("/admin/appointments/:id", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid appointment ID",
+      });
+    }
+
+    const appointment = await appointmentsCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!appointment) {
+      return res.status(404).json({
+        success: false,
+        message: "Appointment not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: appointment,
+    });
+  } catch (error) {
+    console.error("Appointment details error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch appointment details",
+    });
+  }
+});
+
+// ===============================
+// ADMIN: UPDATE APPOINTMENT STATUS
+// ===============================
+app.patch("/admin/appointments/:id/status", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid appointment ID",
+      });
+    }
+
+    if (!["confirmed", "cancelled"].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Status must be confirmed or cancelled",
+      });
+    }
+
+    const appointment = await appointmentsCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!appointment) {
+      return res.status(404).json({
+        success: false,
+        message: "Appointment not found",
+      });
+    }
+
+    if (status === "confirmed" && appointment.status !== "pending") {
+      return res.status(400).json({
+        success: false,
+        message: "Only pending appointments can be confirmed",
+      });
+    }
+
+    if (
+      status === "cancelled" &&
+      !["pending", "confirmed"].includes(appointment.status)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "This appointment cannot be cancelled",
+      });
+    }
+
+    await appointmentsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          status,
+          updatedAt: new Date(),
+        },
+      }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: `Appointment ${status} successfully`,
+    });
+  } catch (error) {
+    console.error("Update appointment status error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update appointment status",
+    });
+  }
+});
+
+// ADMIN: GET ALL CUSTOMERS
+app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { search, status } = req.query;
+
+    const query = { role: "customer" };
+
+    if (search && typeof search === "string") {
+      const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+      query.$or = [
+        { name: { $regex: safeSearch, $options: "i" } },
+        { email: { $regex: safeSearch, $options: "i" } },
+      ];
+    }
+
+    if (status === "blocked") {
+      query.isBlocked = true;
+    } else if (status === "active") {
+      query.isBlocked = { $ne: true };
+    }
+
+    const users = await usersCollection
+      .find(query)
+      .project({
+        name: 1,
+        email: 1,
+        image: 1,
+        createdAt: 1,
+        isBlocked: 1,
+      })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      count: users.length,
+      data: users,
+    });
+  } catch (error) {
+    console.error("Get admin users error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch customers.",
+    });
+  }
+});
+
+
+// ADMIN: BLOCK / UNBLOCK CUSTOMER
+app.patch(
+  "/admin/users/:id/status",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { isBlocked } = req.body;
+
+      if (typeof isBlocked !== "boolean") {
+        return res.status(400).json({
+          success: false,
+          message: "isBlocked must be true or false.",
+        });
+      }
+
+      const userFilters = [
+        { id: String(id) },
+        { _id: String(id) },
+      ];
+
+      if (ObjectId.isValid(id)) {
+        userFilters.push({ _id: new ObjectId(id) });
+      }
+
+      const result = await usersCollection.updateOne(
+        {
+          role: "customer",
+          $or: userFilters,
+        },
+        {
+          $set: { isBlocked },
+        }
+      );
+
+      if (result.matchedCount === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Customer not found.",
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        message: isBlocked
+          ? "Customer blocked successfully."
+          : "Customer unblocked successfully.",
+      });
+    } catch (error) {
+      console.error("Update customer status error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to update customer status.",
+      });
+    }
+  }
+);
+
 
 
   // NOT FOUND
