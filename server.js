@@ -5,6 +5,7 @@
   import { MongoClient, ObjectId } from "mongodb";
   import { verifyToken, verifyAdmin } from "./middleware/auth.js";
   import uploadRoutes from "./routes/upload.routes.js";
+import Stripe from "stripe";
 
   const app = express();
   const port = Number(process.env.PORT) || 5000;
@@ -16,6 +17,7 @@
   }
 
   app.use(express.json());
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
   app.use(
     cors({
@@ -43,6 +45,99 @@ const transactionsCollection = db.collection("transactions");
 
   // Make database available to middleware
   app.locals.db = db;
+
+  // Stripe Webhook - Raw Body Required
+app.post(
+  "/stripe/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const signature = req.headers["stripe-signature"];
+
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        signature,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (error) {
+      console.error("Stripe Webhook Signature Error:", error.message);
+      return res.status(400).send(`Webhook Error: ${error.message}`);
+    }
+
+    try {
+      if (event.type === "checkout.session.completed") {
+        const session = event.data.object;
+
+        if (session.payment_status === "paid") {
+          const appointmentId = session.metadata?.appointmentId;
+
+          if (!appointmentId || !ObjectId.isValid(appointmentId)) {
+            return res.status(400).json({
+              received: false,
+              message: "Invalid appointment ID.",
+            });
+          }
+
+          const appointment = await appointmentsCollection.findOne({
+            _id: new ObjectId(appointmentId),
+            stripeCheckoutSessionId: session.id,
+          });
+
+          if (appointment) {
+            await appointmentsCollection.updateOne(
+              {
+                _id: appointment._id,
+                paymentStatus: { $ne: "paid" },
+              },
+              {
+                $set: {
+                  paymentStatus: "paid",
+                  paidAt: new Date(),
+                },
+              }
+            );
+
+            const existingTransaction =
+              await transactionsCollection.findOne({
+                stripeCheckoutSessionId: session.id,
+              });
+
+            if (!existingTransaction) {
+              await transactionsCollection.insertOne({
+                appointmentId: appointment._id,
+                customerId: appointment.customerId,
+                customerName: appointment.customerName,
+                customerEmail: appointment.customerEmail,
+                serviceName: appointment.serviceName,
+                appointmentDate: appointment.appointmentDate,
+                amount: (session.amount_total || 0) / 100,
+                currency: session.currency?.toUpperCase() || "BDT",
+                stripeCheckoutSessionId: session.id,
+                paymentIntentId: session.payment_intent,
+                status: "paid",
+                transactionDate: new Date(),
+              });
+            }
+          }
+        }
+      }
+
+      return res.status(200).json({ received: true });
+    } catch (error) {
+      console.error("Stripe Webhook Processing Error:", error);
+
+      return res.status(500).json({
+        received: false,
+        message: "Webhook processing failed.",
+      });
+    }
+  }
+);
+
+// JSON Middleware - Keep this after Stripe Webhook
+app.use(express.json());
 
   // Health Check
   app.get("/", (req, res) => {
@@ -880,6 +975,107 @@ app.get("/appointments", verifyToken, async (req, res) => {
 });
 
 
+
+app.post(
+  "/appointments/:id/create-checkout-session",
+  verifyToken,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid appointment ID.",
+        });
+      }
+
+      const appointment = await appointmentsCollection.findOne({
+        _id: new ObjectId(id),
+        customerId: req.user.id,
+      });
+
+      if (!appointment) {
+        return res.status(404).json({
+          success: false,
+          message: "Appointment not found.",
+        });
+      }
+
+      if (appointment.status === "cancelled") {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot pay for a cancelled appointment.",
+        });
+      }
+
+      if (appointment.paymentStatus === "paid") {
+        return res.status(400).json({
+          success: false,
+          message: "This appointment is already paid.",
+        });
+      }
+
+      const price = Number(appointment.servicePrice);
+
+      if (!Number.isFinite(price) || price <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid appointment price.",
+        });
+      }
+
+      const session = await stripe.checkout.sessions.create({
+        mode: "payment",
+
+        line_items: [
+          {
+            price_data: {
+              currency: "bdt",
+              product_data: {
+                name: appointment.serviceName,
+              },
+              unit_amount: Math.round(price * 100),
+            },
+            quantity: 1,
+          },
+        ],
+
+        success_url:
+          `${process.env.CLIENT_URL}/customer/dashboard/appointments?payment=success`,
+
+        cancel_url:
+          `${process.env.CLIENT_URL}/customer/dashboard/appointments?payment=cancelled`,
+
+        metadata: {
+          appointmentId: id,
+          customerId: req.user.id,
+        },
+      });
+
+      await appointmentsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            stripeCheckoutSessionId: session.id,
+          },
+        }
+      );
+
+      res.status(200).json({
+        success: true,
+        url: session.url,
+      });
+    } catch (error) {
+      console.error("Stripe Checkout Error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Could not create checkout session.",
+      });
+    }
+  }
+);
 
 
 
