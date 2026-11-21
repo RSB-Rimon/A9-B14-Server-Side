@@ -791,6 +791,75 @@ app.patch(
 
 
 
+app.post("/appointments", verifyToken, async (req, res) => {
+  try {
+    const { serviceId, appointmentDate, timeSlot, message } = req.body;
+
+    if (!serviceId || !appointmentDate || !timeSlot) {
+      return res.status(400).json({
+        success: false,
+        message: "Service, appointment date and time are required.",
+      });
+    }
+
+    if (!ObjectId.isValid(serviceId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid service ID.",
+      });
+    }
+
+    const service = await servicesCollection.findOne({
+      _id: new ObjectId(serviceId),
+      status: "active",
+    });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        message: "Service not found or inactive.",
+      });
+    }
+
+    const appointment = {
+      customerId: req.user.id,
+      customerName: req.user.name || "",
+      customerEmail: req.user.email,
+      serviceId: service._id,
+      serviceName: service.serviceName || service.name,
+      servicePrice: Number(service.price),
+      serviceDuration: Number(service.duration),
+      appointmentDate,
+      timeSlot,
+      message: message || "",
+      status: "pending",
+      paymentStatus: "unpaid",
+      createdAt: new Date(),
+    };
+
+    const result = await appointmentsCollection.insertOne(appointment);
+
+    res.status(201).json({
+      success: true,
+      message: "Appointment request submitted successfully!",
+      data: {
+        _id: result.insertedId,
+        ...appointment,
+      },
+    });
+  } catch (error) {
+    console.error("Appointment booking error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to create appointment.",
+    });
+  }
+});
+
+
+
+
   // NOT FOUND
   app.use((req, res) => {
     res.status(404).json({
