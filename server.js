@@ -1297,9 +1297,9 @@ app.post(
             },
           ],
 
-          success_url: `${process.env.CLIENT_URL}/customer/dashboard/appointments?payment=success`,
+          success_url: `${process.env.CLIENT_URL}/customer/dashboard/payment-success`,
 
-          cancel_url: `${process.env.CLIENT_URL}/customer/dashboard/appointments?payment=cancelled`,
+          cancel_url: `${process.env.CLIENT_URL}/customer/dashboard/payment-cancelled`,
 
           metadata: {
             appointmentId: id,
