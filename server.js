@@ -1,56 +1,56 @@
-﻿
-  import express from "express";
-  import cors from "cors";
-  import "dotenv/config";
-  import { MongoClient, ObjectId } from "mongodb";
-  import { verifyToken, verifyAdmin } from "./middleware/auth.js";
-  import uploadRoutes from "./routes/upload.routes.js";
+﻿import express from "express";
+import cors from "cors";
+import "dotenv/config";
+import { MongoClient, ObjectId } from "mongodb";
+import { verifyToken, verifyAdmin } from "./middleware/auth.js";
+import uploadRoutes from "./routes/upload.routes.js";
 import Stripe from "stripe";
 
-  const app = express();
-  const port = Number(process.env.PORT) || 5000;
-  const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
-  const mongoUri = process.env.MONGODB_URI;
+const app = express();
+const port = Number(process.env.PORT) || 5000;
+const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
+const mongoUri = process.env.MONGODB_URI;
 
-  if (!mongoUri) {
-    throw new Error("MONGODB_URI is missing from the environment.");
-  }
+if (!mongoUri) {
+  throw new Error("MONGODB_URI is missing from the environment.");
+}
 
-  app.use(express.json());
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+// app.use(express.json());
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-  app.use(
-    cors({
-      origin: clientUrl,
-      methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-      allowedHeaders: ["Content-Type", "Authorization"],
-    })
-  );
-  app.use("/admin", uploadRoutes);
-  const mongoClient = new MongoClient(mongoUri);
+app.use(
+  cors({
+    origin: clientUrl,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  }),
+);
+app.use("/admin", uploadRoutes);
+const mongoClient = new MongoClient(mongoUri);
 
-  try {
-    await mongoClient.connect();
-    console.log("Connected to MongoDB.");
-  } catch (error) {
-    console.error("MongoDB connection failed:", error);
-    process.exit(1);
-  }
+try {
+  await mongoClient.connect();
+  console.log("Connected to MongoDB.");
+} catch (error) {
+  console.error("MongoDB connection failed:", error);
+  process.exit(1);
+}
 
-  const db = mongoClient.db("salonbookDB");
-  const servicesCollection = db.collection("services");
-  const usersCollection = db.collection("user");
+const db = mongoClient.db("salonbookDB");
+const servicesCollection = db.collection("services");
+const usersCollection = db.collection("user");
 const appointmentsCollection = db.collection("appointments");
 const transactionsCollection = db.collection("transactions");
 
-  // Make database available to middleware
-  app.locals.db = db;
+// Make database available to middleware
+app.locals.db = db;
 
-  // Stripe Webhook - Raw Body Required
+// Stripe Webhook - Raw Body Required
 app.post(
   "/stripe/webhook",
   express.raw({ type: "application/json" }),
   async (req, res) => {
+    console.log("Stripe Webhook Request Received!");
     const signature = req.headers["stripe-signature"];
 
     let event;
@@ -59,7 +59,7 @@ app.post(
       event = stripe.webhooks.constructEvent(
         req.body,
         signature,
-        process.env.STRIPE_WEBHOOK_SECRET
+        process.env.STRIPE_WEBHOOK_SECRET,
       );
     } catch (error) {
       console.error("Stripe Webhook Signature Error:", error.message);
@@ -84,6 +84,8 @@ app.post(
             _id: new ObjectId(appointmentId),
             stripeCheckoutSessionId: session.id,
           });
+          console.log("Appointment Found:", !!appointment);
+          console.log("Appointment ID:", appointmentId);
 
           if (appointment) {
             await appointmentsCollection.updateOne(
@@ -96,13 +98,12 @@ app.post(
                   paymentStatus: "paid",
                   paidAt: new Date(),
                 },
-              }
+              },
             );
 
-            const existingTransaction =
-              await transactionsCollection.findOne({
-                stripeCheckoutSessionId: session.id,
-              });
+            const existingTransaction = await transactionsCollection.findOne({
+              stripeCheckoutSessionId: session.id,
+            });
 
             if (!existingTransaction) {
               await transactionsCollection.insertOne({
@@ -133,25 +134,25 @@ app.post(
         message: "Webhook processing failed.",
       });
     }
-  }
+  },
 );
 
 // JSON Middleware - Keep this after Stripe Webhook
 app.use(express.json());
 
-  // Health Check
-  app.get("/", (req, res) => {
-    res.send("SalonBook API is running.");
-  });
+// Health Check
+app.get("/", (req, res) => {
+  res.send("SalonBook API is running.");
+});
 
-  // ADMIN AUTHENTICATION TEST
-  app.get("/admin/test", verifyToken, verifyAdmin, (req, res) => {
-    res.status(200).json({
-      success: true,
-      message: "Admin authentication successful!",
-    });
+// ADMIN AUTHENTICATION TEST
+app.get("/admin/test", verifyToken, verifyAdmin, (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "Admin authentication successful!",
   });
-  app.get("/test-services", async (req, res) => {
+});
+app.get("/test-services", async (req, res) => {
   try {
     const services = await servicesCollection.find({}).toArray();
 
@@ -166,303 +167,304 @@ app.use(express.json());
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
-}); 
+});
 
+// GET ALL ACTIVE SERVICES
+app.get("/services", async (req, res) => {
+  try {
+    const { search, category, sort } = req.query;
 
+    const query = {
+      status: "active",
+    };
 
+    if (search && typeof search === "string") {
+      const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-  // GET ALL ACTIVE SERVICES
-  app.get("/services", async (req, res) => {
-    try {
-      const { search, category, sort } = req.query;
-
-      const query = {
-        status: "active",
+      query.serviceName = {
+        $regex: safeSearch,
+        $options: "i",
       };
+    }
 
-      if (search && typeof search === "string") {
-        const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (category && typeof category === "string") {
+      query.category = category;
+    }
 
-        query.serviceName = {
-          $regex: safeSearch,
-          $options: "i",
-        };
-      }
+    let sortOption = { createdAt: -1 };
 
-      if (category && typeof category === "string") {
-        query.category = category;
-      }
+    if (sort === "price-asc") {
+      sortOption = { price: 1 };
+    } else if (sort === "price-desc") {
+      sortOption = { price: -1 };
+    }
 
-      let sortOption = { createdAt: -1 };
+    const services = await servicesCollection
+      .find(query)
+      .sort(sortOption)
+      .toArray();
 
-      if (sort === "price-asc") {
-        sortOption = { price: 1 };
-      } else if (sort === "price-desc") {
-        sortOption = { price: -1 };
-      }
+    res.status(200).json({
+      success: true,
+      count: services.length,
+      data: services,
+    });
+  } catch (error) {
+    console.error("Get services error:", error);
 
-      const services = await servicesCollection
-        .find(query)
-        .sort(sortOption)
-        .toArray();
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch services.",
+    });
+  }
+});
 
-      res.status(200).json({
-        success: true,
-        count: services.length,
-        data: services,
-      });
-    } catch (error) {
-      console.error("Get services error:", error);
+// GET SINGLE ACTIVE SERVICE
+app.get("/services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
 
-      res.status(500).json({
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
         success: false,
-        message: "Failed to fetch services.",
+        message: "Invalid service ID.",
       });
     }
-  });
 
-  // GET SINGLE ACTIVE SERVICE
-  app.get("/services/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
+    const service = await servicesCollection.findOne({
+      _id: new ObjectId(id),
+      status: "active",
+    });
 
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid service ID.",
-        });
-      }
-
-      const service = await servicesCollection.findOne({
-        _id: new ObjectId(id),
-        status: "active",
-      });
-
-      if (!service) {
-        return res.status(404).json({
-          success: false,
-          message: "Service not found.",
-        });
-      }
-
-      res.status(200).json({
-        success: true,
-        data: service,
-      });
-    } catch (error) {
-      console.error("Get service error:", error);
-
-      res.status(500).json({
+    if (!service) {
+      return res.status(404).json({
         success: false,
-        message: "Failed to fetch service.",
+        message: "Service not found.",
       });
     }
-  });
 
-  // ADMIN: GET ALL SERVICES (ACTIVE + INACTIVE)
-  app.get("/admin/services", verifyToken, verifyAdmin, async (req, res) => {
-    try {
-      const services = await servicesCollection
-        .find({})
-        .sort({ createdAt: -1 })
-        .toArray();
+    res.status(200).json({
+      success: true,
+      data: service,
+    });
+  } catch (error) {
+    console.error("Get service error:", error);
 
-      res.status(200).json({
-        success: true,
-        count: services.length,
-        data: services,
-      });
-    } catch (error) {
-      console.error("Admin get services error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch service.",
+    });
+  }
+});
 
-      res.status(500).json({
+// ADMIN: GET ALL SERVICES (ACTIVE + INACTIVE)
+app.get("/admin/services", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const services = await servicesCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      count: services.length,
+      data: services,
+    });
+  } catch (error) {
+    console.error("Admin get services error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch services.",
+    });
+  }
+});
+
+// ADMIN: CREATE SERVICE
+app.post("/admin/services", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const {
+      serviceName,
+      category,
+      description,
+      price,
+      duration,
+      image,
+      status = "active",
+    } = req.body;
+
+    const numericPrice = Number(price);
+    const numericDuration = Number(duration);
+
+    if (
+      typeof serviceName !== "string" ||
+      !serviceName.trim() ||
+      typeof category !== "string" ||
+      !category.trim() ||
+      typeof description !== "string" ||
+      !description.trim() ||
+      typeof image !== "string" ||
+      !image.trim() ||
+      !Number.isFinite(numericPrice) ||
+      numericPrice <= 0 ||
+      !Number.isFinite(numericDuration) ||
+      numericDuration <= 0 ||
+      !["active", "inactive"].includes(status)
+    ) {
+      return res.status(400).json({
         success: false,
-        message: "Failed to fetch services.",
+        message: "Please provide valid service information.",
       });
     }
-  });
 
-  // ADMIN: CREATE SERVICE
-  app.post("/admin/services", verifyToken, verifyAdmin, async (req, res) => {
-    try {
-      const {
-        serviceName,
-        category,
-        description,
-        price,
-        duration,
-        image,
-        status = "active",
-      } = req.body;
+    const newService = {
+      serviceName: serviceName.trim(),
+      category: category.trim(),
+      description: description.trim(),
+      price: numericPrice,
+      duration: numericDuration,
+      image: image.trim(),
+      status,
+      createdAt: new Date(),
+    };
 
-      const numericPrice = Number(price);
-      const numericDuration = Number(duration);
+    const result = await servicesCollection.insertOne(newService);
 
+    res.status(201).json({
+      success: true,
+      message: "Service created successfully.",
+      data: {
+        _id: result.insertedId,
+        ...newService,
+      },
+    });
+  } catch (error) {
+    console.error("Create service error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to create service.",
+    });
+  }
+});
+
+// ADMIN: UPDATE SERVICE
+app.patch("/admin/services/:id", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid service ID.",
+      });
+    }
+
+    const allowedFields = [
+      "serviceName",
+      "category",
+      "description",
+      "price",
+      "duration",
+      "image",
+      "status",
+    ];
+
+    const updates = {};
+
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        updates[field] = req.body[field];
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No valid fields provided.",
+      });
+    }
+
+    for (const field of ["serviceName", "category", "description", "image"]) {
       if (
-        typeof serviceName !== "string" ||
-        !serviceName.trim() ||
-        typeof category !== "string" ||
-        !category.trim() ||
-        typeof description !== "string" ||
-        !description.trim() ||
-        typeof image !== "string" ||
-        !image.trim() ||
-        !Number.isFinite(numericPrice) ||
-        numericPrice <= 0 ||
-        !Number.isFinite(numericDuration) ||
-        numericDuration <= 0 ||
-        !["active", "inactive"].includes(status)
+        updates[field] !== undefined &&
+        (typeof updates[field] !== "string" || !updates[field].trim())
       ) {
         return res.status(400).json({
           success: false,
-          message: "Please provide valid service information.",
+          message: `Invalid ${field}.`,
         });
       }
 
-      const newService = {
-        serviceName: serviceName.trim(),
-        category: category.trim(),
-        description: description.trim(),
-        price: numericPrice,
-        duration: numericDuration,
-        image: image.trim(),
-        status,
-        createdAt: new Date(),
-      };
+      if (updates[field] !== undefined) {
+        updates[field] = updates[field].trim();
+      }
+    }
 
-      const result = await servicesCollection.insertOne(newService);
+    if (updates.price !== undefined) {
+      updates.price = Number(updates.price);
 
-      res.status(201).json({
-        success: true,
-        message: "Service created successfully.",
-        data: {
-          _id: result.insertedId,
-          ...newService,
-        },
-      });
-    } catch (error) {
-      console.error("Create service error:", error);
+      if (!Number.isFinite(updates.price) || updates.price <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Price must be a positive number.",
+        });
+      }
+    }
 
-      res.status(500).json({
+    if (updates.duration !== undefined) {
+      updates.duration = Number(updates.duration);
+
+      if (!Number.isFinite(updates.duration) || updates.duration <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Duration must be a positive number.",
+        });
+      }
+    }
+
+    if (
+      updates.status !== undefined &&
+      !["active", "inactive"].includes(updates.status)
+    ) {
+      return res.status(400).json({
         success: false,
-        message: "Failed to create service.",
+        message: "Invalid service status.",
       });
     }
-  });
 
-  // ADMIN: UPDATE SERVICE
-  app.patch("/admin/services/:id", verifyToken, verifyAdmin, async (req, res) => {
-    try {
-      const { id } = req.params;
+    const result = await servicesCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updates },
+    );
 
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid service ID.",
-        });
-      }
-
-      const allowedFields = [
-        "serviceName",
-        "category",
-        "description",
-        "price",
-        "duration",
-        "image",
-        "status",
-      ];
-
-      const updates = {};
-
-      for (const field of allowedFields) {
-        if (req.body[field] !== undefined) {
-          updates[field] = req.body[field];
-        }
-      }
-
-      if (Object.keys(updates).length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: "No valid fields provided.",
-        });
-      }
-
-      for (const field of ["serviceName", "category", "description", "image"]) {
-        if (
-          updates[field] !== undefined &&
-          (typeof updates[field] !== "string" || !updates[field].trim())
-        ) {
-          return res.status(400).json({
-            success: false,
-            message: `Invalid ${field}.`,
-          });
-        }
-
-        if (updates[field] !== undefined) {
-          updates[field] = updates[field].trim();
-        }
-      }
-
-      if (updates.price !== undefined) {
-        updates.price = Number(updates.price);
-
-        if (!Number.isFinite(updates.price) || updates.price <= 0) {
-          return res.status(400).json({
-            success: false,
-            message: "Price must be a positive number.",
-          });
-        }
-      }
-
-      if (updates.duration !== undefined) {
-        updates.duration = Number(updates.duration);
-
-        if (!Number.isFinite(updates.duration) || updates.duration <= 0) {
-          return res.status(400).json({
-            success: false,
-            message: "Duration must be a positive number.",
-          });
-        }
-      }
-
-      if (
-        updates.status !== undefined &&
-        !["active", "inactive"].includes(updates.status)
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid service status.",
-        });
-      }
-
-      const result = await servicesCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: updates }
-      );
-
-      if (result.matchedCount === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "Service not found.",
-        });
-      }
-
-      res.status(200).json({
-        success: true,
-        message: "Service updated successfully.",
-      });
-    } catch (error) {
-      console.error("Update service error:", error);
-
-      res.status(500).json({
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
         success: false,
-        message: "Failed to update service.",
+        message: "Service not found.",
       });
     }
-  });
 
-  // ADMIN: DELETE SERVICE
-  app.delete("/admin/services/:id", verifyToken, verifyAdmin, async (req, res) => {
+    res.status(200).json({
+      success: true,
+      message: "Service updated successfully.",
+    });
+  } catch (error) {
+    console.error("Update service error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to update service.",
+    });
+  }
+});
+
+// ADMIN: DELETE SERVICE
+app.delete(
+  "/admin/services/:id",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
     try {
       const { id } = req.params;
 
@@ -496,10 +498,10 @@ app.use(express.json());
         message: "Failed to delete service.",
       });
     }
-  });
+  },
+);
 
-
- // ADMIN: DASHBOARD OVERVIEW
+// ADMIN: DASHBOARD OVERVIEW
 app.get(
   "/admin/dashboard/stats",
   verifyToken,
@@ -555,14 +557,12 @@ app.get(
         ])
         .toArray();
 
-      const successfulPaymentAmount =
-        paymentResult[0]?.totalAmount || 0;
+      const successfulPaymentAmount = paymentResult[0]?.totalAmount || 0;
 
       const formattedAppointments = await Promise.all(
         recentAppointments.map(async (appointment) => {
           const serviceId = appointment.serviceId;
-          const customerId =
-            appointment.customerId || appointment.userId;
+          const customerId = appointment.customerId || appointment.userId;
 
           let service = null;
           let customer = null;
@@ -601,7 +601,7 @@ app.get(
             status: appointment.status || "pending",
             createdAt: appointment.createdAt || null,
           };
-        })
+        }),
       );
 
       res.status(200).json({
@@ -627,11 +627,10 @@ app.get(
         message: "Failed to fetch dashboard statistics.",
       });
     }
-  }
+  },
 );
 
-
-// add more 
+// add more
 // ===============================
 // ADMIN: GET ALL APPOINTMENTS
 // ===============================
@@ -666,113 +665,123 @@ app.get("/admin/appointments", verifyToken, verifyAdmin, async (req, res) => {
 // ===============================
 // ADMIN: GET APPOINTMENT DETAILS
 // ===============================
-app.get("/admin/appointments/:id", verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
+app.get(
+  "/admin/appointments/:id",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
 
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid appointment ID",
+        });
+      }
+
+      const appointment = await appointmentsCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!appointment) {
+        return res.status(404).json({
+          success: false,
+          message: "Appointment not found",
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        data: appointment,
+      });
+    } catch (error) {
+      console.error("Appointment details error:", error);
+      res.status(500).json({
         success: false,
-        message: "Invalid appointment ID",
+        message: "Failed to fetch appointment details",
       });
     }
-
-    const appointment = await appointmentsCollection.findOne({
-      _id: new ObjectId(id),
-    });
-
-    if (!appointment) {
-      return res.status(404).json({
-        success: false,
-        message: "Appointment not found",
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      data: appointment,
-    });
-  } catch (error) {
-    console.error("Appointment details error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch appointment details",
-    });
-  }
-});
+  },
+);
 
 // ===============================
 // ADMIN: UPDATE APPOINTMENT STATUS
 // ===============================
-app.patch("/admin/appointments/:id/status", verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
+app.patch(
+  "/admin/appointments/:id/status",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
 
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid appointment ID",
-      });
-    }
-
-    if (!["confirmed", "cancelled"].includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: "Status must be confirmed or cancelled",
-      });
-    }
-
-    const appointment = await appointmentsCollection.findOne({
-      _id: new ObjectId(id),
-    });
-
-    if (!appointment) {
-      return res.status(404).json({
-        success: false,
-        message: "Appointment not found",
-      });
-    }
-
-    if (status === "confirmed" && appointment.status !== "pending") {
-      return res.status(400).json({
-        success: false,
-        message: "Only pending appointments can be confirmed",
-      });
-    }
-
-    if (
-      status === "cancelled" &&
-      !["pending", "confirmed"].includes(appointment.status)
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "This appointment cannot be cancelled",
-      });
-    }
-
-    await appointmentsCollection.updateOne(
-      { _id: new ObjectId(id) },
-      {
-        $set: {
-          status,
-          updatedAt: new Date(),
-        },
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid appointment ID",
+        });
       }
-    );
 
-    res.status(200).json({
-      success: true,
-      message: `Appointment ${status} successfully`,
-    });
-  } catch (error) {
-    console.error("Update appointment status error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to update appointment status",
-    });
-  }
-});
+      if (!["confirmed", "cancelled"].includes(status)) {
+        return res.status(400).json({
+          success: false,
+          message: "Status must be confirmed or cancelled",
+        });
+      }
+
+      const appointment = await appointmentsCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!appointment) {
+        return res.status(404).json({
+          success: false,
+          message: "Appointment not found",
+        });
+      }
+
+      if (status === "confirmed" && appointment.status !== "pending") {
+        return res.status(400).json({
+          success: false,
+          message: "Only pending appointments can be confirmed",
+        });
+      }
+
+      if (
+        status === "cancelled" &&
+        !["pending", "confirmed"].includes(appointment.status)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "This appointment cannot be cancelled",
+        });
+      }
+
+      await appointmentsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            status,
+            updatedAt: new Date(),
+          },
+        },
+      );
+
+      res.status(200).json({
+        success: true,
+        message: `Appointment ${status} successfully`,
+      });
+    } catch (error) {
+      console.error("Update appointment status error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to update appointment status",
+      });
+    }
+  },
+);
 
 // ADMIN: GET ALL CUSTOMERS
 app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
@@ -823,7 +832,6 @@ app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
-
 // ADMIN: BLOCK / UNBLOCK CUSTOMER
 app.patch(
   "/admin/users/:id/status",
@@ -841,10 +849,7 @@ app.patch(
         });
       }
 
-      const userFilters = [
-        { id: String(id) },
-        { _id: String(id) },
-      ];
+      const userFilters = [{ id: String(id) }, { _id: String(id) }];
 
       if (ObjectId.isValid(id)) {
         userFilters.push({ _id: new ObjectId(id) });
@@ -857,7 +862,7 @@ app.patch(
         },
         {
           $set: { isBlocked },
-        }
+        },
       );
 
       if (result.matchedCount === 0) {
@@ -881,10 +886,8 @@ app.patch(
         message: "Failed to update customer status.",
       });
     }
-  }
+  },
 );
-
-
 
 app.post("/appointments", verifyToken, async (req, res) => {
   try {
@@ -974,8 +977,6 @@ app.get("/appointments", verifyToken, async (req, res) => {
   }
 });
 
-
-
 app.post(
   "/appointments/:id/create-checkout-session",
   verifyToken,
@@ -1041,11 +1042,9 @@ app.post(
           },
         ],
 
-        success_url:
-          `${process.env.CLIENT_URL}/customer/dashboard/appointments?payment=success`,
+        success_url: `${process.env.CLIENT_URL}/customer/dashboard/appointments?payment=success`,
 
-        cancel_url:
-          `${process.env.CLIENT_URL}/customer/dashboard/appointments?payment=cancelled`,
+        cancel_url: `${process.env.CLIENT_URL}/customer/dashboard/appointments?payment=cancelled`,
 
         metadata: {
           appointmentId: id,
@@ -1059,7 +1058,7 @@ app.post(
           $set: {
             stripeCheckoutSessionId: session.id,
           },
-        }
+        },
       );
 
       res.status(200).json({
@@ -1074,19 +1073,48 @@ app.post(
         message: "Could not create checkout session.",
       });
     }
-  }
+  },
 );
 
 
 
-  // NOT FOUND
-  app.use((req, res) => {
-    res.status(404).json({
-      success: false,
-      message: "API route not found.",
-    });
-  });
+// ADMIN: GET ALL TRANSACTIONS
+app.get(
+  "/admin/transactions",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const transactions = await transactionsCollection
+        .find({})
+        .sort({ transactionDate: -1 })
+        .toArray();
 
-  app.listen(port, () => {
-    console.log(`SalonBook API running on port ${port}`);
+      res.status(200).json({
+        success: true,
+        count: transactions.length,
+        data: transactions,
+      });
+    } catch (error) {
+      console.error("Get transactions error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch transactions.",
+      });
+    }
+  }
+);
+
+
+// NOT FOUND
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: "API route not found.",
   });
+});
+
+app.listen(port, () => {
+  console.log(`SalonBook API running on port ${port}`);
+});
