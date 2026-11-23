@@ -101,6 +101,25 @@ try {
   process.exit(1);
 }
 
+try {
+  await transactionsCollection.createIndex(
+    { stripeCheckoutSessionId: 1 },
+    {
+      name: "uniq_transaction_checkout_session",
+      unique: true,
+      partialFilterExpression: {
+        stripeCheckoutSessionId: { $type: "string" },
+      },
+    },
+  );
+} catch (error) {
+  console.error(
+    "Failed to create the unique transaction checkout session index. Resolve duplicate transactions before restarting.",
+    error,
+  );
+  process.exit(1);
+}
+
 // Make database available to middleware
 app.locals.db = db;
 
@@ -160,25 +179,39 @@ app.post(
               },
             );
 
-            const existingTransaction = await transactionsCollection.findOne({
+            const transaction = {
+              appointmentId: appointment._id,
+              customerId: appointment.customerId,
+              customerName: appointment.customerName,
+              customerEmail: appointment.customerEmail,
+              serviceName: appointment.serviceName,
+              appointmentDate: appointment.appointmentDate,
+              amount: (session.amount_total || 0) / 100,
+              currency: session.currency?.toUpperCase() || "BDT",
               stripeCheckoutSessionId: session.id,
-            });
+              paymentIntentId: session.payment_intent,
+              status: "paid",
+              transactionDate: new Date(),
+            };
 
-            if (!existingTransaction) {
-              await transactionsCollection.insertOne({
-                appointmentId: appointment._id,
-                customerId: appointment.customerId,
-                customerName: appointment.customerName,
-                customerEmail: appointment.customerEmail,
-                serviceName: appointment.serviceName,
-                appointmentDate: appointment.appointmentDate,
-                amount: (session.amount_total || 0) / 100,
-                currency: session.currency?.toUpperCase() || "BDT",
+            try {
+              await transactionsCollection.updateOne(
+                { stripeCheckoutSessionId: session.id },
+                { $setOnInsert: transaction },
+                { upsert: true },
+              );
+            } catch (error) {
+              if (error?.code !== 11000) {
+                throw error;
+              }
+
+              const existingTransaction = await transactionsCollection.findOne({
                 stripeCheckoutSessionId: session.id,
-                paymentIntentId: session.payment_intent,
-                status: "paid",
-                transactionDate: new Date(),
               });
+
+              if (!existingTransaction) {
+                throw error;
+              }
             }
           }
         }
