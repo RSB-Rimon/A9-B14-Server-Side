@@ -1495,3 +1495,4 @@ app.use((req, res) => {
 app.listen(port, () => {
   console.log(`SalonBook API running on port ${port}`);
 });
+export default app;
