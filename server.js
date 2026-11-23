@@ -42,6 +42,25 @@ const usersCollection = db.collection("user");
 const appointmentsCollection = db.collection("appointments");
 const transactionsCollection = db.collection("transactions");
 
+try {
+  await appointmentsCollection.createIndex(
+    { serviceId: 1, appointmentDate: 1, timeSlot: 1 },
+    {
+      name: "uniq_active_appointment_slot",
+      unique: true,
+      partialFilterExpression: {
+        status: { $in: ["pending", "confirmed"] },
+      },
+    },
+  );
+} catch (error) {
+  console.error(
+    "Failed to create the active appointment slot index. Resolve duplicate active appointments before restarting.",
+    error,
+  );
+  process.exit(1);
+}
+
 // Make database available to middleware
 app.locals.db = db;
 
@@ -919,6 +938,20 @@ app.post("/appointments", verifyToken, verifyCustomer, async (req, res) => {
       });
     }
 
+    const conflictingAppointment = await appointmentsCollection.findOne({
+      serviceId: service._id,
+      appointmentDate,
+      timeSlot,
+      status: { $in: ["pending", "confirmed"] },
+    });
+
+    if (conflictingAppointment) {
+      return res.status(409).json({
+        success: false,
+        message: "This service time slot is already booked. Please choose another time.",
+      });
+    }
+
     const appointment = {
       customerId: req.user.id,
       customerName: req.user.name || "",
@@ -946,6 +979,18 @@ app.post("/appointments", verifyToken, verifyCustomer, async (req, res) => {
       },
     });
   } catch (error) {
+    if (
+      error?.code === 11000 &&
+      error?.keyPattern?.serviceId === 1 &&
+      error?.keyPattern?.appointmentDate === 1 &&
+      error?.keyPattern?.timeSlot === 1
+    ) {
+      return res.status(409).json({
+        success: false,
+        message: "This service time slot is already booked. Please choose another time.",
+      });
+    }
+
     console.error("Appointment booking error:", error);
 
     res.status(500).json({
