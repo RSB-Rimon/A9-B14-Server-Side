@@ -2,7 +2,7 @@
 import cors from "cors";
 import "dotenv/config";
 import { MongoClient, ObjectId } from "mongodb";
-import { verifyToken, verifyAdmin } from "./middleware/auth.js";
+import { verifyToken, verifyAdmin, verifyCustomer } from "./middleware/auth.js";
 import uploadRoutes from "./routes/upload.routes.js";
 import Stripe from "stripe";
 
@@ -889,7 +889,7 @@ app.patch(
   },
 );
 
-app.post("/appointments", verifyToken, async (req, res) => {
+app.post("/appointments", verifyToken, verifyCustomer, async (req, res) => {
   try {
     const { serviceId, appointmentDate, timeSlot, message } = req.body;
 
@@ -980,6 +980,7 @@ app.get("/appointments", verifyToken, async (req, res) => {
 app.post(
   "/appointments/:id/create-checkout-session",
   verifyToken,
+  verifyCustomer,
   async (req, res) => {
     try {
       const { id } = req.params;

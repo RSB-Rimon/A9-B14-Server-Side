@@ -78,14 +78,16 @@ export const verifyToken = async (req, res, next) => {
   }
 };
 
-// Admin Only
-export const verifyAdmin = (req, res, next) => {
-  if (req.user?.role !== "admin") {
+const verifyRole = (role, roleLabel) => (req, res, next) => {
+  if (req.user?.role !== role) {
     return res.status(403).json({
       success: false,
-      message: "Access denied. Admin only.",
+      message: `Access denied. ${roleLabel} only.`,
     });
   }
 
   next();
 };
+
+export const verifyAdmin = verifyRole("admin", "Admin");
+export const verifyCustomer = verifyRole("customer", "Customer");
