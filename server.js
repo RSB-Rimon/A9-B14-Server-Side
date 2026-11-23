@@ -42,6 +42,21 @@ const usersCollection = db.collection("user");
 const appointmentsCollection = db.collection("appointments");
 const transactionsCollection = db.collection("transactions");
 
+const getCheckoutSessionIdFilter = (appointment) =>
+  Object.prototype.hasOwnProperty.call(appointment, "stripeCheckoutSessionId")
+    ? appointment.stripeCheckoutSessionId
+    : { $exists: false };
+
+const expireCheckoutSession = async (sessionId) => {
+  let session = await stripe.checkout.sessions.retrieve(sessionId);
+
+  if (session.status === "open") {
+    session = await stripe.checkout.sessions.expire(sessionId);
+  }
+
+  return session;
+};
+
 try {
   await appointmentsCollection.createIndex(
     { serviceId: 1, appointmentDate: 1, timeSlot: 1 },
@@ -778,8 +793,43 @@ app.patch(
         });
       }
 
-      await appointmentsCollection.updateOne(
-        { _id: new ObjectId(id) },
+      if (status === "cancelled" && appointment.paymentStatus === "paid") {
+        return res.status(400).json({
+          success: false,
+          message: "Paid appointments cannot be cancelled.",
+        });
+      }
+
+      if (
+        status === "cancelled" &&
+        appointment.stripeCheckoutSessionId
+      ) {
+        const checkoutSession = await expireCheckoutSession(
+          appointment.stripeCheckoutSessionId,
+        );
+
+        if (checkoutSession.status !== "expired") {
+          return res.status(400).json({
+            success: false,
+            message:
+              "This appointment has a completed checkout session and cannot be cancelled.",
+          });
+        }
+      }
+
+      const updateFilter = {
+        _id: new ObjectId(id),
+        status: appointment.status,
+      };
+
+      if (status === "cancelled") {
+        updateFilter.paymentStatus = { $ne: "paid" };
+        updateFilter.stripeCheckoutSessionId =
+          getCheckoutSessionIdFilter(appointment);
+      }
+
+      const updateResult = await appointmentsCollection.updateOne(
+        updateFilter,
         {
           $set: {
             status,
@@ -787,6 +837,13 @@ app.patch(
           },
         },
       );
+
+      if (updateResult.matchedCount === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Appointment status changed. Refresh and try again.",
+        });
+      }
 
       res.status(200).json({
         success: true,
@@ -1060,11 +1117,26 @@ app.patch(
         });
       }
 
+      if (appointment.stripeCheckoutSessionId) {
+        const checkoutSession = await expireCheckoutSession(
+          appointment.stripeCheckoutSessionId,
+        );
+
+        if (checkoutSession.status !== "expired") {
+          return res.status(400).json({
+            success: false,
+            message:
+              "This appointment has a completed checkout session and cannot be cancelled.",
+          });
+        }
+      }
+
       const result = await appointmentsCollection.updateOne(
         {
           ...appointmentQuery,
           status: "pending",
           paymentStatus: { $ne: "paid" },
+          stripeCheckoutSessionId: getCheckoutSessionIdFilter(appointment),
         },
         {
           $set: {
@@ -1133,10 +1205,24 @@ app.post(
         });
       }
 
+      if (appointment.status === "pending") {
+        return res.status(400).json({
+          success: false,
+          message: "Appointment must be confirmed before payment.",
+        });
+      }
+
       if (appointment.status === "cancelled") {
         return res.status(400).json({
           success: false,
           message: "Cannot pay for a cancelled appointment.",
+        });
+      }
+
+      if (appointment.status !== "confirmed") {
+        return res.status(400).json({
+          success: false,
+          message: "Only confirmed appointments can be paid.",
         });
       }
 
@@ -1145,6 +1231,44 @@ app.post(
           success: false,
           message: "This appointment is already paid.",
         });
+      }
+
+      if (appointment.paymentStatus !== "unpaid") {
+        return res.status(400).json({
+          success: false,
+          message: "Appointment payment status is not eligible for checkout.",
+        });
+      }
+
+      const previousSessionId = appointment.stripeCheckoutSessionId;
+
+      if (previousSessionId) {
+        const existingSession =
+          await stripe.checkout.sessions.retrieve(previousSessionId);
+
+        if (existingSession.status === "open" && existingSession.url) {
+          return res.status(200).json({
+            success: true,
+            url: existingSession.url,
+          });
+        }
+
+        if (existingSession.status === "complete") {
+          return res.status(400).json({
+            success: false,
+            message:
+              existingSession.payment_status === "paid"
+                ? "This appointment is already paid."
+                : "This appointment already has a completed checkout session.",
+          });
+        }
+
+        if (existingSession.status !== "expired") {
+          return res.status(400).json({
+            success: false,
+            message: "The existing checkout session is not available.",
+          });
+        }
       }
 
       const price = Number(appointment.servicePrice);
@@ -1156,34 +1280,45 @@ app.post(
         });
       }
 
-      const session = await stripe.checkout.sessions.create({
-        mode: "payment",
+      const session = await stripe.checkout.sessions.create(
+        {
+          mode: "payment",
 
-        line_items: [
-          {
-            price_data: {
-              currency: "bdt",
-              product_data: {
-                name: appointment.serviceName,
+          line_items: [
+            {
+              price_data: {
+                currency: "bdt",
+                product_data: {
+                  name: appointment.serviceName,
+                },
+                unit_amount: Math.round(price * 100),
               },
-              unit_amount: Math.round(price * 100),
+              quantity: 1,
             },
-            quantity: 1,
+          ],
+
+          success_url: `${process.env.CLIENT_URL}/customer/dashboard/appointments?payment=success`,
+
+          cancel_url: `${process.env.CLIENT_URL}/customer/dashboard/appointments?payment=cancelled`,
+
+          metadata: {
+            appointmentId: id,
+            customerId: req.user.id,
           },
-        ],
-
-        success_url: `${process.env.CLIENT_URL}/customer/dashboard/appointments?payment=success`,
-
-        cancel_url: `${process.env.CLIENT_URL}/customer/dashboard/appointments?payment=cancelled`,
-
-        metadata: {
-          appointmentId: id,
-          customerId: req.user.id,
         },
-      });
+        {
+          idempotencyKey: `appointment-${id}-${previousSessionId || "initial"}`,
+        },
+      );
 
-      await appointmentsCollection.updateOne(
-        { _id: new ObjectId(id) },
+      const updateResult = await appointmentsCollection.updateOne(
+        {
+          _id: new ObjectId(id),
+          customerId: req.user.id,
+          status: "confirmed",
+          paymentStatus: "unpaid",
+          stripeCheckoutSessionId: getCheckoutSessionIdFilter(appointment),
+        },
         {
           $set: {
             stripeCheckoutSessionId: session.id,
@@ -1191,7 +1326,36 @@ app.post(
         },
       );
 
-      res.status(200).json({
+      if (updateResult.matchedCount === 0) {
+        const currentAppointment = await appointmentsCollection.findOne({
+          _id: new ObjectId(id),
+          customerId: req.user.id,
+          status: "confirmed",
+          paymentStatus: "unpaid",
+          stripeCheckoutSessionId: session.id,
+        });
+
+        if (!currentAppointment) {
+          if (session.status === "open") {
+            await stripe.checkout.sessions.expire(session.id);
+          }
+
+          return res.status(400).json({
+            success: false,
+            message:
+              "This appointment is no longer eligible for checkout. Refresh and try again.",
+          });
+        }
+      }
+
+      if (!session.url) {
+        return res.status(500).json({
+          success: false,
+          message: "Stripe did not provide a checkout URL.",
+        });
+      }
+
+      return res.status(200).json({
         success: true,
         url: session.url,
       });
