@@ -42,6 +42,31 @@ const usersCollection = db.collection("user");
 const appointmentsCollection = db.collection("appointments");
 const transactionsCollection = db.collection("transactions");
 
+const allowedAppointmentTimeSlots = new Set([
+  "09:00 AM",
+  "10:00 AM",
+  "11:00 AM",
+  "12:00 PM",
+  "01:00 PM",
+  "02:00 PM",
+  "03:00 PM",
+  "04:00 PM",
+  "05:00 PM",
+  "06:00 PM",
+]);
+
+const isValidAppointmentDate = (date) => {
+  if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return false;
+  }
+
+  const parsedDate = new Date(`${date}T00:00:00.000Z`);
+  return (
+    Number.isFinite(parsedDate.getTime()) &&
+    parsedDate.toISOString().slice(0, 10) === date
+  );
+};
+
 const getCheckoutSessionIdFilter = (appointment) =>
   Object.prototype.hasOwnProperty.call(appointment, "stripeCheckoutSessionId")
     ? appointment.stripeCheckoutSessionId
@@ -973,6 +998,31 @@ app.post("/appointments", verifyToken, verifyCustomer, async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Service, appointment date and time are required.",
+      });
+    }
+
+    if (!isValidAppointmentDate(appointmentDate)) {
+      return res.status(400).json({
+        success: false,
+        message: "Appointment date must be a valid date in YYYY-MM-DD format.",
+      });
+    }
+
+    const todayUtc = new Date().toISOString().slice(0, 10);
+    if (appointmentDate < todayUtc) {
+      return res.status(400).json({
+        success: false,
+        message: "Appointment date cannot be in the past.",
+      });
+    }
+
+    if (
+      typeof timeSlot !== "string" ||
+      !allowedAppointmentTimeSlots.has(timeSlot)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid time slot. Please select an available time slot.",
       });
     }
 
