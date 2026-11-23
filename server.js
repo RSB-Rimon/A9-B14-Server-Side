@@ -1022,6 +1022,90 @@ app.get("/appointments", verifyToken, async (req, res) => {
   }
 });
 
+app.patch(
+  "/appointments/:id/cancel",
+  verifyToken,
+  verifyCustomer,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid appointment ID.",
+        });
+      }
+
+      const appointmentQuery = {
+        _id: new ObjectId(id),
+        customerId: req.user.id,
+      };
+      const appointment = await appointmentsCollection.findOne(appointmentQuery);
+
+      if (!appointment) {
+        return res.status(404).json({
+          success: false,
+          message: "Appointment not found.",
+        });
+      }
+
+      if (
+        appointment.status !== "pending" ||
+        appointment.paymentStatus === "paid"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Only unpaid pending appointments can be cancelled.",
+        });
+      }
+
+      const result = await appointmentsCollection.updateOne(
+        {
+          ...appointmentQuery,
+          status: "pending",
+          paymentStatus: { $ne: "paid" },
+        },
+        {
+          $set: {
+            status: "cancelled",
+            updatedAt: new Date(),
+          },
+        },
+      );
+
+      if (result.matchedCount === 0) {
+        const currentAppointment =
+          await appointmentsCollection.findOne(appointmentQuery);
+
+        if (!currentAppointment) {
+          return res.status(404).json({
+            success: false,
+            message: "Appointment not found.",
+          });
+        }
+
+        return res.status(400).json({
+          success: false,
+          message: "Only unpaid pending appointments can be cancelled.",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Appointment cancelled successfully.",
+      });
+    } catch (error) {
+      console.error("Cancel customer appointment error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to cancel appointment.",
+      });
+    }
+  },
+);
+
 app.post(
   "/appointments/:id/create-checkout-session",
   verifyToken,
